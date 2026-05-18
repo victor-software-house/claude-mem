@@ -86,6 +86,7 @@ import {
 import { readJsonSafe } from '../../utils/json-utils.js';
 import { shutdownWorkerAndWait } from '../../services/install/shutdown-helper.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { devinCliPluginDirectory } from '../../services/integrations/DevinCliInstaller.js';
 
 function registerMarketplace(): void {
   const knownMarketplaces = readJsonSafe<Record<string, any>>(knownMarketplacesPath(), {});
@@ -279,6 +280,27 @@ function makeIDETask(ideId: string, failedIDEs: string[], pendingErrors: string[
             return `Codex CLI: integration setup failed ${pc.red('FAIL')}`;
           }
           return `Codex CLI: hooks marketplace registered ${pc.green('OK')}`;
+        },
+      };
+    }
+
+    case 'devin-cli': {
+      return {
+        title: 'Devin CLI: installing plugin + hooks',
+        task: async (message) => {
+          message('Loading Devin CLI installer…');
+          const { installDevinCliIntegration } = await import('../../services/integrations/DevinCliInstaller.js');
+          message('Checking Bun…');
+          const { bunPath } = await ensureBun();
+          message('Checking uv…');
+          await ensureUv();
+          message('Installing Devin CLI plugin…');
+          const { result, output } = await bufferConsole(() => installDevinCliIntegration(npmPackagePluginDirectory(), bunPath));
+          if (result !== 0) {
+            recordFailure('Devin CLI: integration setup failed', output);
+            return `Devin CLI: integration setup failed ${pc.red('FAIL')}`;
+          }
+          return `Devin CLI: plugin + hooks installed ${pc.green('OK')}`;
         },
       };
     }
@@ -1095,14 +1117,10 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
-  // Claude Code consumes the marketplace plugin system directly, so any selection
-  // (claude-code or otherwise) needs the marketplace + plugin registration steps.
-  // The only time we'd skip is a hypothetical no-IDE install, which the prompt above
-  // doesn't allow today.
-  const needsMarketplace = selectedIDEs.length > 0;
+  const needsClaudePluginSystem = selectedIDEs.some((id) => id !== 'devin-cli');
 
   {
-    if (needsMarketplace) {
+    if (needsClaudePluginSystem) {
       const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
       const shutdownSpinner = isInteractive ? p.spinner() : null;
       shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
@@ -1127,56 +1145,58 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
       }
     }
 
-    const tasks: TaskDescriptor[] = [
-      {
-        title: 'Caching plugin version',
-        task: async (message) => {
-          message(`Caching v${version}...`);
-          copyPluginToCache(version);
-          return `Plugin cached (v${version}) ${pc.green('OK')}`;
-        },
-      },
-      {
-        title: 'Registering marketplace',
-        task: async () => {
-          registerMarketplace();
-          return `Marketplace registered ${pc.green('OK')}`;
-        },
-      },
-      {
-        title: 'Registering plugin',
-        task: async () => {
-          registerPlugin(version);
-          return `Plugin registered ${pc.green('OK')}`;
-        },
-      },
-      {
-        title: 'Enabling plugin in Claude settings',
-        task: async () => {
-          enablePluginInClaudeSettings();
-          return `Plugin enabled ${pc.green('OK')}`;
-        },
-      },
-      {
-        title: 'Setting up runtime (first install can take ~30s)',
-        task: async (message) => {
-          message('Checking Bun…');
-          const { version: bunVersion } = await ensureBun();
-          message('Checking uv…');
-          const { version: uvVersion } = await ensureUv();
-          const cacheDir = pluginCacheDirectory(version);
-          if (!isInstallCurrent(cacheDir, version)) {
-            message('Installing plugin dependencies…');
-            const { bunPath } = await ensureBun();
-            await installPluginDependencies(cacheDir, bunPath);
-            writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
-          }
-          return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
-        },
-      },
-    ];
+    const tasks: TaskDescriptor[] = needsClaudePluginSystem
+      ? [
+          {
+            title: 'Caching plugin version',
+            task: async (message) => {
+              message(`Caching v${version}...`);
+              copyPluginToCache(version);
+              return `Plugin cached (v${version}) ${pc.green('OK')}`;
+            },
+          },
+          {
+            title: 'Registering marketplace',
+            task: async () => {
+              registerMarketplace();
+              return `Marketplace registered ${pc.green('OK')}`;
+            },
+          },
+          {
+            title: 'Registering plugin',
+            task: async () => {
+              registerPlugin(version);
+              return `Plugin registered ${pc.green('OK')}`;
+            },
+          },
+          {
+            title: 'Enabling plugin in Claude settings',
+            task: async () => {
+              enablePluginInClaudeSettings();
+              return `Plugin enabled ${pc.green('OK')}`;
+            },
+          },
+          {
+            title: 'Setting up runtime (first install can take ~30s)',
+            task: async (message) => {
+              message('Checking Bun…');
+              const { version: bunVersion } = await ensureBun();
+              message('Checking uv…');
+              const { version: uvVersion } = await ensureUv();
+              const cacheDir = pluginCacheDirectory(version);
+              if (!isInstallCurrent(cacheDir, version)) {
+                message('Installing plugin dependencies…');
+                const { bunPath } = await ensureBun();
+                await installPluginDependencies(cacheDir, bunPath);
+                writeInstallMarker(cacheDir, version, bunVersion, uvVersion);
+              }
+              return `Runtime ready (Bun ${bunVersion}, uv ${uvVersion}) ${pc.green('OK')}`;
+            },
+          },
+        ]
+      : [];
 
-    if (needsMarketplace) {
+    if (needsClaudePluginSystem) {
       tasks.unshift({
         title: 'Copying plugin files to marketplace',
         task: async (message) => {
@@ -1241,9 +1261,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
             : `Skipped (non-TTY)`;
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
+        const devinScriptPath = join(devinCliPluginDirectory(), 'scripts', 'worker-service.cjs');
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
-        const scriptPath = existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
+        const scriptPath = selectedIDEs.includes('devin-cli') && existsSync(devinScriptPath)
+          ? devinScriptPath
+          : existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
         message(`Spawning ${selectedRuntime === 'server-beta' ? 'server beta' : 'worker'} on port ${port}...`);
         workerStartResult = await ensureWorkerStarted(port, scriptPath);
         switch (workerStartResult) {
@@ -1259,9 +1282,12 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   ]);
 
   const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
+  const pluginDirSummary = selectedIDEs.length === 1 && selectedIDEs[0] === 'devin-cli'
+    ? devinCliPluginDirectory()
+    : marketplaceDir;
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
-    `Plugin dir:  ${pc.cyan(marketplaceDir)}`,
+    `Plugin dir:  ${pc.cyan(pluginDirSummary)}`,
     `IDEs:        ${pc.cyan(selectedIDEs.join(', '))}`,
   ];
   if (autoMemoryStatus === 'disabled') {
@@ -1331,48 +1357,48 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
     ? [
         workerHeadline,
         ``,
-        `${pc.bold('First success:')} once the worker is running, keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        `${pc.bold('First success:')} once the worker is running, keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open your configured IDE in any project. Observations stream in as your assistant reads, edits, and runs commands.`,
         ``,
         `${pc.bold('Two paths from here:')}`,
         `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        `  ${pc.cyan('B.')} Front-load it: open your configured IDE and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
         ``,
         `Memory injection starts on your second session in a project.`,
         `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
         ``,
         `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+        `${pc.dim('Note: close all AI coding sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
       ]
     : workerAlive
     ? [
         workerHeadline,
         ``,
-        `${pc.bold('First success:')} keep that URL open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        `${pc.bold('First success:')} keep that URL open in a browser, then open your configured IDE in any project. Observations stream in as your assistant reads, edits, and runs commands.`,
         ``,
         `${pc.bold('Two paths from here:')}`,
         `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        `  ${pc.cyan('B.')} Front-load it: open your configured IDE and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
         ``,
         `Memory injection starts on your second session in a project.`,
         `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
         ``,
         `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+        `${pc.dim('Note: close all AI coding sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
       ]
     : [
         `${pc.yellow('!')} Worker not yet ready on port ${pc.cyan(String(workerPort))} -- still starting up; check ${pc.bold('claude-mem status')} later, or start manually: ${pc.bold('npx claude-mem start')}`,
         ``,
-        `${pc.bold('First success:')} keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open Claude Code in any project. Observations stream in as Claude reads, edits, and runs commands.`,
+        `${pc.bold('First success:')} keep ${pc.underline(`http://localhost:${workerPort}`)} open in a browser, then open your configured IDE in any project. Observations stream in as your assistant reads, edits, and runs commands.`,
         ``,
         `${pc.bold('Two paths from here:')}`,
         `  ${pc.cyan('A.')} Just start working. Memory builds passively from your first prompt. (Recommended.)`,
-        `  ${pc.cyan('B.')} Front-load it: open Claude Code and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
+        `  ${pc.cyan('B.')} Front-load it: open your configured IDE and run ${pc.bold('/learn-codebase')} to ingest the whole repo (~5 min, optional).`,
         ``,
         `Memory injection starts on your second session in a project.`,
         `Everything stays in ${pc.cyan('~/.claude-mem')} on this machine.`,
         ``,
         `${pc.dim('How it works: /how-it-works   ·   Disable first-session hint: CLAUDE_MEM_WELCOME_HINT_ENABLED=false')}`,
-        `${pc.dim('Note: close all Claude Code sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
+        `${pc.dim('Note: close all AI coding sessions before uninstalling, or ~/.claude-mem will be recreated by active hooks.')}`,
       ];
 
   if (isInteractive) {
