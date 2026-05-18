@@ -85,7 +85,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'devin-cli',
       label: 'Devin CLI',
-      detected: existsSync(join(home, '.config', 'devin')) || isCommandInPath('devin'),
+      detected: isCommandInPath('devin'),
       supported: true,
       hint: 'native hooks + MCP integration',
     },

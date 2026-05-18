@@ -20,6 +20,7 @@ import {
   writeSync,
 } from 'fs';
 import { findBunPath } from './CursorHooksInstaller.js';
+import { DEVIN_READ_TOOL_MATCHER } from '../../cli/adapters/devin-cli.js';
 
 interface DevinHookEntry {
   type: 'command';
@@ -44,7 +45,14 @@ const DEVIN_CONFIG_DIR = path.join(homedir(), '.config', 'devin');
 const DEVIN_CONFIG_PATH = path.join(DEVIN_CONFIG_DIR, 'config.json');
 const DEVIN_PLUGIN_DIR = path.join(DEVIN_CONFIG_DIR, 'plugins', 'claude-mem');
 const DEVIN_HOOK_MARKER = 'CLAUDE_MEM_DEVIN_HOOK=1';
-const IS_WINDOWS = process.platform === 'win32';
+
+const BUN_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
+function assertPosix(): void {
+  if (process.platform === 'win32') {
+    throw new Error('Devin CLI is not supported on Windows. Install on macOS or Linux.');
+  }
+}
 
 function readDevinConfig(): DevinConfig {
   if (!existsSync(DEVIN_CONFIG_PATH)) return {};
@@ -78,7 +86,6 @@ function configFileMode(filepath: string): number {
 }
 
 function fsyncDirectory(filepath: string): void {
-  if (IS_WINDOWS) return;
   let fd: number | undefined;
   try {
     fd = openSync(path.dirname(filepath), 'r');
@@ -125,19 +132,11 @@ function posixShellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function windowsShellQuote(value: string): string {
-  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
 function envAssignment(key: string, value: string): string {
   return `${key}=${posixShellQuote(value)}`;
 }
 
 function buildCommand(bunPath: string, workerServicePath: string, args: string[]): string {
-  if (IS_WINDOWS) {
-    const command = [bunPath, workerServicePath, ...args].map(windowsShellQuote).join(' ');
-    return `set "CLAUDE_CONFIG_DIR=${DEVIN_CONFIG_DIR}" && set "PLUGIN_ROOT=${DEVIN_PLUGIN_DIR}" && set "${DEVIN_HOOK_MARKER}" && ${command}`;
-  }
   const command = [bunPath, workerServicePath, ...args].map(posixShellQuote).join(' ');
   const env = [
     envAssignment('CLAUDE_CONFIG_DIR', DEVIN_CONFIG_DIR),
@@ -157,9 +156,7 @@ function hook(command: string, timeout: number, statusMessage: string): DevinHoo
 }
 
 function isInstallerOwnedHook(entry: DevinHookEntry): boolean {
-  const legacyWorkerPath = path.join(DEVIN_PLUGIN_DIR, 'scripts', 'worker-service.cjs');
-  return entry.command.includes(DEVIN_HOOK_MARKER)
-    || entry.command.includes(legacyWorkerPath);
+  return entry.command.includes(DEVIN_HOOK_MARKER);
 }
 
 function replaceHookGroups(
@@ -225,7 +222,7 @@ function mergeDevinHooks(config: DevinConfig, bunPath: string, pluginDir = DEVIN
 
   replaceHookGroups(hooks, 'PreToolUse', [
     {
-      matcher: 'read|Read',
+      matcher: DEVIN_READ_TOOL_MATCHER,
       hooks: [
         hook(
           buildCommand(bunPath, workerServicePath, ['hook', 'devin-cli', 'file-context']),
@@ -251,12 +248,25 @@ function mergeDevinHooks(config: DevinConfig, bunPath: string, pluginDir = DEVIN
   config.hooks = hooks;
 }
 
-function mergeDevinMcp(config: DevinConfig): void {
+function resolveNodeCommand(): string {
+  try {
+    const resolved = execFileSync('/usr/bin/env', ['sh', '-c', 'command -v node'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (resolved) return resolved;
+  } catch {
+    // fall through
+  }
+  return process.execPath;
+}
+
+function mergeDevinMcp(config: DevinConfig, nodeCommand: string): void {
   config.mcpServers = {
     ...(config.mcpServers ?? {}),
     'claude-mem': {
       type: 'stdio',
-      command: process.execPath,
+      command: nodeCommand,
       args: [
         path.join(DEVIN_PLUGIN_DIR, 'scripts', 'mcp-server.cjs'),
       ],
@@ -277,14 +287,28 @@ function installPluginDependencies(targetDir: string, bunPath: string): void {
   execFileSync(bunPath, ['install'], {
     cwd: targetDir,
     stdio: 'pipe',
+    timeout: BUN_INSTALL_TIMEOUT_MS,
   });
+}
+
+function shouldSkipCopyEntry(source: string): boolean {
+  const base = path.basename(source);
+  return base === 'node_modules' || base === '.cache';
 }
 
 export function devinCliPluginDirectory(): string {
   return DEVIN_PLUGIN_DIR;
 }
 
-export async function installDevinCliIntegration(sourcePluginDirectory: string, bunPath = findBunPath()): Promise<number> {
+export async function installDevinCliIntegration(sourcePluginDirectory: string, bunPath?: string): Promise<number> {
+  try {
+    assertPosix();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\n${message}`);
+    return 1;
+  }
+
   console.log('\nInstalling Claude-Mem for Devin CLI...\n');
 
   if (!existsSync(sourcePluginDirectory)) {
@@ -292,33 +316,43 @@ export async function installDevinCliIntegration(sourcePluginDirectory: string, 
     return 1;
   }
 
+  const resolvedBunPath = bunPath ?? findBunPath();
+
   const stagingDir = `${DEVIN_PLUGIN_DIR}.tmp-${process.pid}`;
   const backupDir = `${DEVIN_PLUGIN_DIR}.backup-${process.pid}`;
   let replacedExisting = false;
+  let pluginDirInstalled = false;
 
   try {
     mkdirSync(path.dirname(DEVIN_PLUGIN_DIR), { recursive: true });
     rmSync(stagingDir, { recursive: true, force: true });
     rmSync(backupDir, { recursive: true, force: true });
-    cpSync(sourcePluginDirectory, stagingDir, { recursive: true, force: true });
-    installPluginDependencies(stagingDir, bunPath);
+    cpSync(sourcePluginDirectory, stagingDir, {
+      recursive: true,
+      force: true,
+      filter: (source) => !shouldSkipCopyEntry(source),
+    });
+    installPluginDependencies(stagingDir, resolvedBunPath);
 
+    const nodeCommand = resolveNodeCommand();
     const config = readDevinConfig();
-    mergeDevinMcp(config);
+    mergeDevinMcp(config, nodeCommand);
     mergePluginDir(config);
-    mergeDevinHooks(config, bunPath);
+    mergeDevinHooks(config, resolvedBunPath);
 
     if (existsSync(DEVIN_PLUGIN_DIR)) {
       renameSync(DEVIN_PLUGIN_DIR, backupDir);
       replacedExisting = true;
     }
     renameSync(stagingDir, DEVIN_PLUGIN_DIR);
+    pluginDirInstalled = true;
     writeDevinConfig(config);
     rmSync(backupDir, { recursive: true, force: true });
 
     console.log(`  Plugin files: ${DEVIN_PLUGIN_DIR}`);
     console.log(`  Devin config: ${DEVIN_CONFIG_PATH}`);
-    console.log(`  Using Bun runtime: ${bunPath}`);
+    console.log(`  Using Bun runtime: ${resolvedBunPath}`);
+    console.log(`  MCP node binary: ${nodeCommand}`);
     console.log(`
 Installation complete!
 
@@ -329,11 +363,16 @@ Next steps:
 `);
     return 0;
   } catch (error) {
-    if (replacedExisting && existsSync(backupDir)) {
-      rmSync(DEVIN_PLUGIN_DIR, { recursive: true, force: true });
-      renameSync(backupDir, DEVIN_PLUGIN_DIR);
+    if (pluginDirInstalled) {
+      if (replacedExisting && existsSync(backupDir)) {
+        rmSync(DEVIN_PLUGIN_DIR, { recursive: true, force: true });
+        renameSync(backupDir, DEVIN_PLUGIN_DIR);
+      } else {
+        rmSync(DEVIN_PLUGIN_DIR, { recursive: true, force: true });
+      }
     }
     rmSync(stagingDir, { recursive: true, force: true });
+    rmSync(backupDir, { recursive: true, force: true });
     const message = error instanceof Error ? error.message : String(error);
     console.error(`\nInstallation failed: ${message}`);
     return 1;

@@ -4,7 +4,6 @@ import { AdapterRejectedInput, isValidCwd } from './errors.js';
 
 type DevinEventName =
   | 'PreToolUse'
-  | 'PermissionRequest'
   | 'PostToolUse'
   | 'SessionStart'
   | 'SessionEnd'
@@ -13,7 +12,6 @@ type DevinEventName =
 
 const EVENT_NAMES = new Set<DevinEventName>([
   'PreToolUse',
-  'PermissionRequest',
   'PostToolUse',
   'SessionStart',
   'SessionEnd',
@@ -22,6 +20,9 @@ const EVENT_NAMES = new Set<DevinEventName>([
 ]);
 
 const MAX_AGENT_FIELD_LEN = 128;
+
+export const DEVIN_READ_TOOL_MATCHER = 'read|Read';
+const DEVIN_READ_TOOL_REGEX = new RegExp(`^(?:${DEVIN_READ_TOOL_MATCHER})$`);
 
 function eventName(value: unknown): DevinEventName | undefined {
   return typeof value === 'string' && EVENT_NAMES.has(value as DevinEventName)
@@ -56,7 +57,7 @@ function cloneToolInput(toolInput: unknown): unknown {
 function extractDevinFilePaths(toolName: string, toolInput: unknown, cwd: string): string[] {
   const extracted = extractFilePaths(toolName, toolInput, cwd);
   if (extracted.length > 0) return extracted;
-  if (!/^(read|Read)$/.test(toolName) || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+  if (!DEVIN_READ_TOOL_REGEX.test(toolName) || !toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
     return [];
   }
   const input = toolInput as Record<string, unknown>;

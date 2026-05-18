@@ -1117,10 +1117,11 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   }
 
   let workerStartResult: WorkerStartResult = 'dead';
+  const isDevinOnlyInstall = selectedIDEs.length === 1 && selectedIDEs[0] === 'devin-cli';
   const needsClaudePluginSystem = selectedIDEs.some((id) => id !== 'devin-cli');
 
   {
-    if (needsClaudePluginSystem) {
+    {
       const installPort = getSetting('CLAUDE_MEM_WORKER_PORT');
       const shutdownSpinner = isInteractive ? p.spinner() : null;
       shutdownSpinner?.start('Stopping running worker (so we can overwrite cleanly)…');
@@ -1264,7 +1265,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
         const devinScriptPath = join(devinCliPluginDirectory(), 'scripts', 'worker-service.cjs');
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');
         const cacheScriptPath = join(pluginCacheDirectory(version), 'scripts', 'worker-service.cjs');
-        const scriptPath = selectedIDEs.includes('devin-cli') && existsSync(devinScriptPath)
+        const scriptPath = isDevinOnlyInstall && existsSync(devinScriptPath)
           ? devinScriptPath
           : existsSync(marketplaceScriptPath) ? marketplaceScriptPath : cacheScriptPath;
         message(`Spawning ${selectedRuntime === 'server-beta' ? 'server beta' : 'worker'} on port ${port}...`);
@@ -1282,9 +1283,7 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
   ]);
 
   const installStatus = failedIDEs.length > 0 ? 'Installation Partial' : 'Installation Complete';
-  const pluginDirSummary = selectedIDEs.length === 1 && selectedIDEs[0] === 'devin-cli'
-    ? devinCliPluginDirectory()
-    : marketplaceDir;
+  const pluginDirSummary = isDevinOnlyInstall ? devinCliPluginDirectory() : marketplaceDir;
   const summaryLines = [
     `Version:     ${pc.cyan(version)}`,
     `Plugin dir:  ${pc.cyan(pluginDirSummary)}`,

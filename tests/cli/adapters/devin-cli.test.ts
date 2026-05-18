@@ -94,6 +94,50 @@ describe('devinCliAdapter.formatOutput', () => {
       },
     });
   });
+
+  it('propagates PreToolUse deny + reason + updatedInput', () => {
+    const output = devinCliAdapter.formatOutput({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'blocked by policy',
+        updatedInput: { file_path: '/safe/path.ts' },
+      },
+    });
+
+    expect(output).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'blocked by policy',
+        updatedInput: { file_path: '/safe/path.ts' },
+      },
+    });
+  });
+
+  it('drops hookSpecificOutput for Stop event', () => {
+    const output = devinCliAdapter.formatOutput({
+      hookSpecificOutput: {
+        hookEventName: 'Stop',
+        additionalContext: 'unused',
+      },
+      continue: true,
+    });
+
+    expect(output).toEqual({ continue: true });
+  });
+
+  it('omits hookSpecificOutput when event name is unrecognized', () => {
+    const output = devinCliAdapter.formatOutput({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        additionalContext: 'should not leak',
+      },
+      reason: 'something',
+    });
+
+    expect(output).toEqual({ reason: 'something' });
+  });
 });
 
 describe('getPlatformAdapter', () => {

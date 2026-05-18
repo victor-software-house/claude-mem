@@ -104,11 +104,12 @@ describe('installDevinCliIntegration', () => {
     expect(config.mcpServers['claude-mem']).toBeDefined();
   });
 
-  it('preserves unrelated hooks while replacing installer-owned hooks', () => {
+  it('preserves unrelated hooks and replaces marker-tagged installer hooks on re-install', () => {
     const { home, plugin, fakeBun } = createFixture('claude-mem-devin-hook-test-');
     const configDir = join(home, '.config', 'devin');
     const configPath = join(configDir, 'config.json');
     const workerPath = join(home, '.config', 'devin', 'plugins', 'claude-mem', 'scripts', 'worker-service.cjs');
+    const stalePriorInstall = `CLAUDE_CONFIG_DIR='${configDir}' PLUGIN_ROOT='${join(configDir, 'plugins', 'claude-mem')}' CLAUDE_MEM_DEVIN_HOOK=1 'old-bun' '${workerPath}' 'hook' 'devin-cli' 'observation'`;
 
     mkdirSync(configDir, { recursive: true });
     writeFileSync(configPath, `${JSON.stringify({
@@ -118,7 +119,7 @@ describe('installDevinCliIntegration', () => {
             matcher: '*',
             hooks: [
               { type: 'command', command: 'echo keep claude-mem audit hook', timeout: 5 },
-              { type: 'command', command: `'bun' '${workerPath}' 'hook' 'devin-cli' 'observation'`, timeout: 120 },
+              { type: 'command', command: stalePriorInstall, timeout: 120 },
             ],
           },
         ],
@@ -133,11 +134,28 @@ describe('installDevinCliIntegration', () => {
     );
 
     expect(commands).toContain('echo keep claude-mem audit hook');
-    expect(commands.some((command: string) =>
-      command.includes(workerPath) && !command.includes('CLAUDE_MEM_DEVIN_HOOK=1')
-    )).toBe(false);
+    expect(commands).not.toContain(stalePriorInstall);
+    expect(commands.filter((command: string) => command.includes('CLAUDE_MEM_DEVIN_HOOK=1'))).toHaveLength(1);
     expect(commands.some((command: string) =>
       command.includes(workerPath) && command.includes('CLAUDE_MEM_DEVIN_HOOK=1')
     )).toBe(true);
+  });
+
+  it('rejects install on Windows', async () => {
+    const installerUrl = pathToFileURL(join(__dirname, '..', '..', '..', 'src', 'services', 'integrations', 'DevinCliInstaller.ts')).href;
+    const runner = [
+      `Object.defineProperty(process, 'platform', { value: 'win32' });`,
+      `const { installDevinCliIntegration } = await import(${JSON.stringify(installerUrl)});`,
+      `const exit = await installDevinCliIntegration('/nonexistent', '/nonexistent-bun');`,
+      `process.exit(exit);`,
+    ].join('\n');
+
+    let exitCode = 0;
+    try {
+      execFileSync(process.execPath, ['-e', runner], { stdio: 'pipe' });
+    } catch (error) {
+      exitCode = (error as { status?: number }).status ?? 1;
+    }
+    expect(exitCode).toBe(1);
   });
 });
