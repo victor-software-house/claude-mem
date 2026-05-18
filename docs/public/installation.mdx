@@ -17,7 +17,7 @@ npx claude-mem install
 
 The interactive installer will:
 - Run a runtime check (auto-installs Bun and uv if missing)
-- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI) and let you multi-select which ones to wire up
+- Detect your installed IDEs (Claude Code, Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, Devin CLI) and let you multi-select which ones to wire up
 - Offer to install Claude Code if it isn't found
 - Prompt for an LLM provider (Claude Code auth, Gemini API key, or OpenRouter API key)
 - Prompt for the Claude model used to compress observations (Haiku / Sonnet / Opus) when the Claude provider is selected
@@ -35,6 +35,16 @@ Install Claude-Mem directly from the plugin marketplace inside Claude Code:
 
 Both methods will automatically configure hooks and start the worker service. Start a new Claude Code session and you'll see context from previous sessions automatically loaded.
 
+### Devin CLI
+
+Install an independent Devin CLI integration with:
+
+```bash
+npx claude-mem install --ide devin-cli
+```
+
+This copies the plugin to `~/.config/devin/plugins/claude-mem`, writes hooks and the MCP server into `~/.config/devin/config.json`, and sets `CLAUDE_CONFIG_DIR=~/.config/devin` for claude-mem hook execution. It does not require a Claude Code plugin installation.
+
 > **Important:** Claude-Mem is published on npm, but running `npm install -g claude-mem` installs the
 > **SDK/library only**. It does **not** register plugin hooks or start the worker service.
 > Always install via `npx claude-mem install` or the `/plugin` commands above.
@@ -44,7 +54,7 @@ Both methods will automatically configure hooks and start the worker service. St
 - **Node.js**: 20.0.0 or higher
 - **Bun** ≥ 1.0 (auto-installed by `npx claude-mem install` if missing)
 - **uv** (auto-installed if missing — provides Python for Chroma's embedding service)
-- **Claude Code** or another supported IDE (Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, OpenClaw)
+- **Claude Code** or another supported IDE (Cursor, Gemini CLI, Windsurf, OpenCode, Codex CLI, Devin CLI, OpenClaw)
 - **SQLite 3**: bundled via `bun:sqlite`
 
 ## Advanced Installation

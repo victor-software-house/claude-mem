@@ -83,6 +83,13 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 'devin-cli',
+      label: 'Devin CLI',
+      detected: existsSync(join(home, '.config', 'devin')) || isCommandInPath('devin'),
+      supported: true,
+      hint: 'native hooks + MCP integration',
+    },
+    {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
