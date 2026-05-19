@@ -156,7 +156,9 @@ function hook(command: string, timeout: number, statusMessage: string): DevinHoo
 }
 
 function isInstallerOwnedHook(entry: DevinHookEntry): boolean {
-  return entry.command.includes(DEVIN_HOOK_MARKER);
+  if (entry.command.includes(DEVIN_HOOK_MARKER)) return true;
+  const ownedWorkerPath = path.join(DEVIN_PLUGIN_DIR, 'scripts', 'worker-service.cjs');
+  return entry.command.includes(ownedWorkerPath);
 }
 
 function replaceHookGroups(
